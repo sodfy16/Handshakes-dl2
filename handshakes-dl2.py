@@ -9,6 +9,7 @@ import pwnagotchi.plugins as plugins
 from flask import abort
 from flask import send_from_directory
 from flask import render_template_string
+from flask import jsonify
 
 TEMPLATE = """
 {% extends "base.html" %}
@@ -16,6 +17,10 @@ TEMPLATE = """
 
 {% block title %}
     {{ title }}
+{% endblock %}
+
+{% block meta %}
+    <meta name="csrf-token" content="{{ csrf_token() }}">
 {% endblock %}
 
 {% block styles %}
@@ -71,8 +76,12 @@ TEMPLATE = """
 
     function deleteHandshake(name) {
         if (confirm('Are you sure you want to delete "' + name + '.22000"?')) {
-            fetch('/plugins/handshakes-dl2/' + name, {
-                method: 'DELETE'
+            var csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+            fetch('/plugins/handshakes-dl2/delete/' + encodeURIComponent(name), {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': csrfToken
+                }
             })
             .then(response => response.json())
             .then(data => {
@@ -130,25 +139,34 @@ class HandshakesDL2(plugins.Plugin):
                                     title="Handshakes | " + pwnagotchi.name(),
                                     handshakes=handshakes)
 
+        # Handle delete via POST to /delete/<filename>
+        elif path.startswith("delete/") and request.method == 'POST':
+            dir = self.config['bettercap']['handshakes']
+            filename = path[7:]  # Remove "delete/" prefix
+            logging.info(f"[HandshakesDL2] delete request - path: '{path}', filename: '{filename}'")
+            
+            # Validate filename to prevent path traversal
+            if '..' in filename or not filename:
+                logging.warning(f"[HandshakesDL2] invalid filename rejected: '{filename}'")
+                return jsonify({"success": False, "error": "Invalid filename"}), 400
+            
+            try:
+                file_path = os.path.join(dir, filename + '.22000')
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    logging.info(f"[HandshakesDL2] deleted {file_path}")
+                    return jsonify({"success": True})
+                else:
+                    return jsonify({"success": False, "error": "File not found"}), 404
+            except Exception as e:
+                logging.error(f"[HandshakesDL2] error deleting {filename}: {e}")
+                return jsonify({"success": False, "error": str(e)}), 500
+
         else:
             dir = self.config['bettercap']['handshakes']
             # Validate filename to prevent path traversal
             if '..' in path or '/' in path:
                 abort(400)
-            
-            # Handle DELETE request
-            if request.method == 'DELETE':
-                try:
-                    file_path = os.path.join(dir, path + '.22000')
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                        logging.info(f"[HandshakesDL2] deleted {file_path}")
-                        return json.dumps({"success": True})
-                    else:
-                        return json.dumps({"success": False, "error": "File not found"}), 404
-                except Exception as e:
-                    logging.error(f"[HandshakesDL2] error deleting {path}: {e}")
-                    return json.dumps({"success": False, "error": str(e)}), 500
             
             # Handle GET request (download)
             try:
